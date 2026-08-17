@@ -112,6 +112,59 @@ def fetch_recent_titles(api_key, max_new=60, max_pages=6, sleep_sec=0.05, verbos
     return df
 
 
+def refresh_missing_revenue(api_key, history, max_refresh=40, sleep_sec=0.05, verbose=True):
+    """
+    Titles pulled before revenue-capture existed, or pulled while still too new for TMDB to have
+    a reported box office figure, are stuck with real_revenue_musd=0 forever unless something
+    goes back and re-checks them. This re-fetches details for exactly those titles (capped per
+    run so a backlog doesn't blow through API limits in one go) and updates them IN PLACE, rather
+    than only ever appending brand-new titles.
+    """
+    if 'real_revenue_musd' not in history.columns:
+        history['real_revenue_musd'] = 0.0
+
+    is_real = history['source'] == 'real_tmdb_pull'
+    is_tmdb_id = history['title_id'].astype(str).str.startswith('TMDB')
+    needs_refresh = history[is_real & is_tmdb_id & (history['real_revenue_musd'].fillna(0) <= 0)].copy()
+
+    if needs_refresh.empty:
+        if verbose:
+            print("No titles need a revenue refresh.")
+        return history, 0
+
+    # Prioritize titles that released longest ago — most likely to have a reported figure by now
+    if 'release_date_full' in needs_refresh.columns:
+        needs_refresh['_release_dt'] = pd.to_datetime(needs_refresh['release_date_full'], errors='coerce')
+        needs_refresh = needs_refresh.sort_values('_release_dt', na_position='last')
+
+    refreshed = 0
+    for _, row in needs_refresh.head(max_refresh).iterrows():
+        tmdb_numeric_id = str(row['title_id']).replace('TMDB', '')
+        if not tmdb_numeric_id.isdigit():
+            continue
+        try:
+            detail = requests.get(f"{TMDB_BASE}/movie/{tmdb_numeric_id}",
+                                   params={"api_key": api_key}, timeout=10).json()
+        except Exception as e:
+            if verbose:
+                print(f"  Skipping {row['title_id']}: request failed ({e})")
+            continue
+        time.sleep(sleep_sec)
+
+        revenue = detail.get('revenue', 0) or 0
+        if revenue > 0:
+            history.loc[history['title_id'] == row['title_id'], 'real_revenue_musd'] = revenue / 1_000_000
+            refreshed += 1
+
+    if verbose:
+        checked = min(len(needs_refresh), max_refresh)
+        print(f"Revenue refresh: checked {checked} candidate titles, updated {refreshed} with a "
+              f"newly-reported box office figure. {len(needs_refresh) - checked} still pending "
+              f"for a future run." if len(needs_refresh) > max_refresh else
+              f"Revenue refresh: checked {checked} candidate titles, updated {refreshed}.")
+    return history, refreshed
+
+
 def main():
     api_key = os.environ.get("TMDB_API_KEY")
     if not api_key:
@@ -129,11 +182,14 @@ def main():
         history = pd.DataFrame(columns=[
             'title_id', 'tmdb_title', 'genre', 'content_type', 'runtime_min', 'num_episodes',
             'production_budget_musd', 'lead_star_power', 'critic_score', 'release_month',
-            'release_dayofweek', 'is_series', 'licensing_flag', 'source', 'pulled_date'
+            'release_dayofweek', 'is_series', 'licensing_flag', 'source', 'pulled_date',
+            'real_revenue_musd'
         ])
 
     print(f"Existing history: {len(history)} titles")
     existing_ids = set(history['title_id'])
+
+    history, n_refreshed = refresh_missing_revenue(api_key, history)
 
     new_titles = fetch_recent_titles(api_key, max_new=60)
     if new_titles.empty:
@@ -144,12 +200,15 @@ def main():
         added = len(new_titles)
         if added > 0:
             history = pd.concat([history, new_titles], ignore_index=True)
-            history.to_csv(DATA_PATH, index=False)
         print(f"Added {added} genuinely new titles. Total history now: {len(history)}")
+
+    if added > 0 or n_refreshed > 0:
+        history.to_csv(DATA_PATH, index=False)
 
     meta = {
         'last_pull_date': datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC'),
         'n_titles_added_this_pull': added,
+        'n_titles_revenue_refreshed_this_pull': n_refreshed,
         'total_titles': len(history),
         'n_real_titles': int((history['source'] == 'real_tmdb_pull').sum()) if 'source' in history else 0,
         'n_simulated_titles': int((history['source'] == 'simulated_bootstrap').sum()) if 'source' in history else 0,

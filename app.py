@@ -61,6 +61,7 @@ with st.sidebar:
     if pull_meta:
         st.caption(f"Last automated pull: {pull_meta.get('last_pull_date', 'unknown')}")
         st.caption(f"Titles added in that pull: {pull_meta.get('n_titles_added_this_pull', 0)}")
+        st.caption(f"Revenue backfilled in that pull: {pull_meta.get('n_titles_revenue_refreshed_this_pull', 0)}")
     else:
         st.caption("No automated pull has run yet — showing bootstrap data only. "
                    "The daily GitHub Actions workflow will populate real titles over time.")
