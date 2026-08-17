@@ -1,0 +1,40 @@
+name: Daily TMDB pull
+
+# Runs once a day and whenever triggered manually from the Actions tab.
+# NOTE: GitHub's cron scheduler runs in UTC and is "best effort" — it can be delayed by a
+# few minutes to an hour during high-load periods. That's normal and fine for a daily job.
+on:
+  schedule:
+    - cron: '0 13 * * *'   # 13:00 UTC daily (~6am Pacific / 9am Eastern)
+  workflow_dispatch: {}     # adds a "Run workflow" button in the GitHub Actions UI
+
+permissions:
+  contents: write
+
+jobs:
+  pull-and-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install pandas numpy requests
+
+      - name: Run TMDB pull
+        env:
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+        run: python fetch_new_titles.py
+
+      - name: Commit updated data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/catalog_history.csv data/last_pull.json
+          git diff --quiet --cached || git commit -m "Daily TMDB pull: $(date -u +'%Y-%m-%d')"
+          git push
