@@ -16,7 +16,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from pipeline import simulate_bootstrap_catalog, run_full_pipeline
+from pipeline import simulate_bootstrap_catalog, run_full_pipeline, ensure_columns
 
 sns.set_style("whitegrid")
 
@@ -32,8 +32,8 @@ def load_catalog():
         df = pd.read_csv(DATA_PATH)
         if df.empty:
             df = simulate_bootstrap_catalog(n=400, seed=42)
-        return df
-    return simulate_bootstrap_catalog(n=400, seed=42)
+        return ensure_columns(df)
+    return ensure_columns(simulate_bootstrap_catalog(n=400, seed=42))
 
 
 def load_pull_metadata():
@@ -159,7 +159,7 @@ else:
             with col:
                 poster_path = title.get('poster_path')
                 if isinstance(poster_path, str) and poster_path:
-                    st.image(f"https://image.tmdb.org/t/p/w300{poster_path}", use_container_width=True)
+                    st.image(f"https://image.tmdb.org/t/p/w300{poster_path}", width='stretch')
                 else:
                     st.markdown("🎬 *No poster available*")
 
@@ -212,13 +212,13 @@ else:
                     "Content ↔ Churn", "Executive Memo"])
 
     with tabs[0]:
-        st.dataframe(result['hypothesis_results'], use_container_width=True)
+        st.dataframe(result['hypothesis_results'], width='stretch')
         st.caption(f"Cohen's d for star power effect: {result['cohens_d']:.3f}" if not np.isnan(result['cohens_d']) else "")
         st.caption("Benjamini-Hochberg correction applied across all tests — check `significant_after_bh` "
                    "rather than raw p-values.")
 
     with tabs[1]:
-        st.dataframe(result['model_results'], use_container_width=True)
+        st.dataframe(result['model_results'], width='stretch')
         fig, ax = plt.subplots(figsize=(6, 4))
         result['feature_importance'].set_index('feature')['importance_mean'].sort_values().plot(
             kind='barh', ax=ax, color='darkorange')
@@ -228,7 +228,7 @@ else:
     with tabs[2]:
         arch_counts = result['catalog']['archetype'].value_counts()
         st.bar_chart(arch_counts)
-        st.dataframe(result['cluster_profile'], use_container_width=True)
+        st.dataframe(result['cluster_profile'], width='stretch')
 
     with tabs[3]:
         st.caption(f"Auto-calibrated churn-reduction constant: {result['calibrated_constant']:.6f} "
@@ -245,19 +245,19 @@ else:
         st.pyplot(fig)
 
         st.markdown("**Top opportunities**")
-        st.dataframe(result['top_titles'], use_container_width=True)
+        st.dataframe(result['top_titles'], width='stretch')
         st.markdown("**Titles to sunset**")
-        st.dataframe(result['bottom_titles'], use_container_width=True)
+        st.dataframe(result['bottom_titles'], width='stretch')
 
     with tabs[4]:
-        st.dataframe(result['churn_coef'], use_container_width=True)
+        st.dataframe(result['churn_coef'], width='stretch')
         st.caption(f"Churn model AUC: {result['churn_auc']:.3f}")
         st.markdown("**A/B test power analysis (churn as guardrail metric)**")
         power_df = pd.DataFrame([
             {"MDE (pp)": mde * 100, "Required n per arm": n}
             for mde, n in result['power_analysis'].items()
         ])
-        st.dataframe(power_df, use_container_width=True)
+        st.dataframe(power_df, width='stretch')
 
     with tabs[5]:
         st.text(result['memo'])

@@ -52,6 +52,31 @@ TARGET_GENRES_TMDB_IDS = {
     'Animation': 16, 'Romance': 10749, 'Sci-Fi': 878, 'Thriller': 53
 }
 
+# The full set of columns the app and pipeline expect to exist. data/catalog_history.csv is
+# mutated externally by a daily cron job, so its schema can drift out from under the app code
+# (e.g. if the CSV was last written by an older version of fetch_new_titles.py before a new
+# column was added). ensure_columns() backfills anything missing with a safe default so neither
+# app.py nor pipeline.py ever crashes on a stale file — the missing data just reads as "unknown"
+# instead of taking the whole dashboard down.
+EXPECTED_COLUMNS_DEFAULTS = {
+    'title_id': '', 'tmdb_title': '', 'genre': 'Drama', 'content_type': 'Original Film',
+    'runtime_min': 90.0, 'num_episodes': 1, 'production_budget_musd': 10.0,
+    'lead_star_power': 50.0, 'critic_score': 60.0, 'release_month': 1,
+    'release_dayofweek': 'Fri', 'is_series': 0, 'licensing_flag': 0,
+    'tmdb_popularity': np.nan, 'overview': '', 'poster_path': None,
+    'release_date_full': None, 'source': 'simulated_bootstrap', 'pulled_date': None,
+}
+
+
+def ensure_columns(df):
+    """Backfills any missing expected columns with safe defaults. Call this on any catalog
+    DataFrame loaded from disk before using it, since the CSV's schema can lag behind the code."""
+    df = df.copy()
+    for col, default in EXPECTED_COLUMNS_DEFAULTS.items():
+        if col not in df.columns:
+            df[col] = default
+    return df
+
 
 # --------------------------------------------------------------------------
 # Bootstrap / simulated catalog (used to seed the dashboard before any real

@@ -19,7 +19,7 @@ import requests
 import pandas as pd
 import numpy as np
 
-from pipeline import TMDB_GENRE_ID_TO_BUCKET
+from pipeline import TMDB_GENRE_ID_TO_BUCKET, ensure_columns
 
 TMDB_BASE = "https://api.themoviedb.org/3"
 DATA_PATH = os.path.join(os.path.dirname(__file__), "data", "catalog_history.csv")
@@ -120,6 +120,7 @@ def main():
 
     if os.path.exists(DATA_PATH):
         history = pd.read_csv(DATA_PATH)
+        history = ensure_columns(history)
     else:
         # Should not normally happen — bootstrap seed should be committed to the repo —
         # but fail gracefully into an empty frame with the right columns if it's missing.
