@@ -72,6 +72,10 @@ def simulate_bootstrap_catalog(n=400, seed=42):
         'release_month': rng.randint(1, 13, n),
         'release_dayofweek': rng.choice(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'], n,
                                          p=[0.08, 0.08, 0.1, 0.1, 0.34, 0.2, 0.1]),
+        'tmdb_popularity': np.nan,
+        'overview': '',
+        'poster_path': None,
+        'release_date_full': pd.NaT,
         'source': 'simulated_bootstrap',
         'pulled_date': pd.NaT,
     })

@@ -80,6 +80,10 @@ def fetch_recent_titles(api_key, max_new=60, max_pages=6, sleep_sec=0.05, verbos
                     'critic_score': r.get('vote_average', 5.0) * 10,
                     'release_month': release_date.month,
                     'release_dayofweek': release_date.day_name()[:3],
+                    'tmdb_popularity': r.get('popularity', 0.0),
+                    'overview': r.get('overview', ''),
+                    'poster_path': r.get('poster_path'),
+                    'release_date_full': release_date.strftime('%Y-%m-%d'),
                 })
             page += 1
         if verbose:

@@ -109,6 +109,84 @@ with c2:
 
 st.divider()
 
+# ---------------- Popular Titles (with poster art + details) ----------------
+st.subheader("🔥 Popular titles")
+st.caption("Real TMDB titles, sorted by TMDB popularity. Simulated bootstrap titles don't have "
+           "real poster art or synopses, so this view only shows titles pulled from TMDB.")
+
+real_titles = catalog_meta[catalog_meta.get('source', pd.Series(dtype=str)) == 'real_tmdb_pull'].copy()
+
+if real_titles.empty:
+    st.info("No real TMDB titles yet — this section will populate once the daily pull (or a "
+            "manual pull from the sidebar) has run at least once.")
+else:
+    filt_col1, filt_col2, filt_col3 = st.columns([2, 2, 1])
+    with filt_col1:
+        genre_options = ["All"] + sorted(real_titles['genre'].dropna().unique().tolist())
+        genre_filter = st.selectbox("Filter by genre", genre_options)
+    with filt_col2:
+        sort_option = st.selectbox("Sort by", ["TMDB popularity", "Critic score", "Budget", "Most recently added"])
+    with filt_col3:
+        n_show = st.number_input("Show", min_value=4, max_value=48, value=12, step=4)
+
+    view = real_titles if genre_filter == "All" else real_titles[real_titles['genre'] == genre_filter]
+
+    sort_map = {
+        "TMDB popularity": ('tmdb_popularity', False),
+        "Critic score": ('critic_score', False),
+        "Budget": ('production_budget_musd', False),
+        "Most recently added": ('pulled_date', False),
+    }
+    sort_col, ascending = sort_map[sort_option]
+    view = view.sort_values(sort_col, ascending=ascending, na_position='last').head(int(n_show))
+
+    # If the full analysis has already been run, pull each title's recommendation to show as a badge
+    rec_lookup = {}
+    if st.session_state.get('pipeline_result') is not None:
+        rec_catalog = st.session_state.pipeline_result['catalog']
+        rec_lookup = rec_catalog.set_index('title_id')['recommendation'].to_dict()
+
+    badge_color = {
+        'Renew / Invest More': '🟢', 'Renew (Monitor)': '🟡',
+        'Renegotiate Terms': '🟠', 'Cancel / Do Not Renew': '🔴'
+    }
+
+    cols_per_row = 4
+    rows_of_titles = [view.iloc[i:i + cols_per_row] for i in range(0, len(view), cols_per_row)]
+    for row_chunk in rows_of_titles:
+        cols = st.columns(cols_per_row)
+        for col, (_, title) in zip(cols, row_chunk.iterrows()):
+            with col:
+                poster_path = title.get('poster_path')
+                if isinstance(poster_path, str) and poster_path:
+                    st.image(f"https://image.tmdb.org/t/p/w300{poster_path}", use_container_width=True)
+                else:
+                    st.markdown("🎬 *No poster available*")
+
+                st.markdown(f"**{title.get('tmdb_title', title['title_id'])}**")
+                st.caption(f"{title['genre']} · ${title['production_budget_musd']:.1f}M budget · "
+                           f"Critic score {title['critic_score']:.0f}/100")
+                if pd.notna(title.get('release_date_full')):
+                    st.caption(f"Released {title['release_date_full']}")
+
+                overview = title.get('overview', '')
+                if isinstance(overview, str) and overview:
+                    truncated = overview if len(overview) <= 140 else overview[:140].rsplit(' ', 1)[0] + "…"
+                    st.write(truncated)
+
+                rec = rec_lookup.get(title['title_id'])
+                if rec:
+                    st.markdown(f"{badge_color.get(rec, '⚪')} **{rec}**")
+
+                tmdb_numeric_id = str(title['title_id']).replace('TMDB', '')
+                st.markdown(f"[View on TMDB](https://www.themoviedb.org/movie/{tmdb_numeric_id})")
+
+    if not rec_lookup:
+        st.caption("Run the full analysis below to see each title's renew/cancel recommendation "
+                   "as a badge on its card.")
+
+st.divider()
+
 # ---------------- Full analysis (on-demand only) ----------------
 st.subheader("Full analysis")
 st.caption("Hypothesis tests, predictive modeling, clustering, economics, and the content-churn "
