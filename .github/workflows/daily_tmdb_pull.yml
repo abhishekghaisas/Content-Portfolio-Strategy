@@ -37,4 +37,18 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add data/catalog_history.csv data/last_pull.json
           git diff --quiet --cached || git commit -m "Daily TMDB pull: $(date -u +'%Y-%m-%d')"
-          git push
+
+          # Rebase onto whatever's currently on main before pushing — protects against a race
+          # where something else (e.g. a manual push) landed on main after this job checked out.
+          for attempt in 1 2 3; do
+            git fetch origin main
+            if git rebase origin/main; then
+              break
+            else
+              git rebase --abort
+              echo "Rebase attempt $attempt failed, retrying..."
+              sleep $((attempt * 5))
+            fi
+          done
+
+          git push origin main
