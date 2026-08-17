@@ -65,6 +65,7 @@ EXPECTED_COLUMNS_DEFAULTS = {
     'release_dayofweek': 'Fri', 'is_series': 0, 'licensing_flag': 0,
     'tmdb_popularity': np.nan, 'overview': '', 'poster_path': None,
     'release_date_full': None, 'source': 'simulated_bootstrap', 'pulled_date': None,
+    'real_revenue_musd': 0.0,
 }
 
 
@@ -101,6 +102,7 @@ def simulate_bootstrap_catalog(n=400, seed=42):
         'overview': '',
         'poster_path': None,
         'release_date_full': pd.NaT,
+        'real_revenue_musd': 0.0,
         'source': 'simulated_bootstrap',
         'pulled_date': pd.NaT,
     })
@@ -290,7 +292,27 @@ def run_clustering(catalog, n_clusters=4):
 # Business economics (auto-calibrated — see notebook Part 6 for rationale)
 # --------------------------------------------------------------------------
 def run_economics(catalog, licensing_cost_frac=0.35, subscriber_ltv_usd=140,
-                   subscriber_base=5_000_000, target_median_roi=1.0):
+                   subscriber_base=5_000_000, target_median_roi=1.0,
+                   real_signal_weight=0.7, theatrical_breakeven_multiple=2.5):
+    """
+    real_signal_weight / theatrical_breakeven_multiple:
+    For titles that have already released (TMDB reports real box office revenue), the simulated
+    streaming-engagement ROI is blended with a signal derived from ACTUAL revenue, rather than
+    trusting the synthetic engagement number alone. This matters because the synthetic engagement
+    formula has no way to know a title actually performed well or badly — without this blend, a
+    real $2B-grossing blockbuster on a $225M budget could get flagged "Cancel" purely because its
+    genre's simulated decay rate is high, which is exactly backwards. Real evidence should dominate
+    a synthetic proxy whenever it's available.
+
+    # ASSUMPTION: a theatrical title typically needs ~2-2.5x its budget in box office revenue to
+    # break even (covers marketing spend + theater revenue share). This converts real box office
+    # into an ROI-like ratio comparable to our streaming roi_ratio (where 1.0 = breakeven), so the
+    # two signals can be blended on the same scale.
+    # ASSUMPTION: real_signal_weight=0.7 means known real performance gets 70% of the weight
+    # against the simulated streaming signal for titles where revenue is actually known. Titles
+    # with no revenue data yet (upcoming/unreleased) get 100% simulated, since that's genuinely
+    # all we have for them.
+    """
     catalog = catalog.copy()
     catalog['renewal_cost_musd'] = (catalog['production_budget_musd'] * licensing_cost_frac).round(2)
 
@@ -306,31 +328,57 @@ def run_economics(catalog, licensing_cost_frac=0.35, subscriber_ltv_usd=140,
     catalog['roi_ratio'] = (catalog['est_retention_value_musd'] /
                              catalog['renewal_cost_musd'].replace(0, np.nan)).round(2)
 
+    # --- Blend in real box office performance where it's known ---
+    if 'real_revenue_musd' not in catalog.columns:
+        catalog['real_revenue_musd'] = 0.0
+    has_real_revenue = catalog['real_revenue_musd'].fillna(0) > 0
+    catalog['real_box_office_multiple'] = np.where(
+        has_real_revenue, catalog['real_revenue_musd'] / catalog['production_budget_musd'].replace(0, np.nan), np.nan
+    ).round(2)
+    real_roi_equivalent = catalog['real_box_office_multiple'] / theatrical_breakeven_multiple
+
+    catalog['blended_roi_ratio'] = catalog['roi_ratio']
+    catalog.loc[has_real_revenue, 'blended_roi_ratio'] = (
+        real_signal_weight * real_roi_equivalent[has_real_revenue] +
+        (1 - real_signal_weight) * catalog.loc[has_real_revenue, 'roi_ratio']
+    ).round(2)
+
     def decision(row):
-        if row['roi_ratio'] >= 1.5:
+        r = row['blended_roi_ratio']
+        if pd.isna(r):
+            return 'Insufficient Data'
+        elif r >= 1.5:
             return 'Renew / Invest More'
-        elif row['roi_ratio'] >= 0.8:
+        elif r >= 0.8:
             return 'Renew (Monitor)'
-        elif row['roi_ratio'] >= 0.4:
+        elif r >= 0.4:
             return 'Renegotiate Terms'
         else:
             return 'Cancel / Do Not Renew'
 
     catalog['recommendation'] = catalog.apply(decision, axis=1)
 
+    # Dollar-consistent version of the blend: since ROI = value / cost and cost is the same
+    # in both the simulated and real-evidence view, blending in ROI-ratio space (above) is
+    # mathematically equivalent to blending the underlying dollar values. Deriving it this way
+    # keeps the recommendation categories and the dollar figures below always in agreement.
+    catalog['blended_est_retention_value_musd'] = (catalog['renewal_cost_musd'] * catalog['blended_roi_ratio']).round(2)
+    catalog['blended_net_value_musd'] = (catalog['blended_est_retention_value_musd'] -
+                                          catalog['renewal_cost_musd']).round(2)
+
     def realized_net_value(row):
-        if row['recommendation'] == 'Cancel / Do Not Renew':
+        if row['recommendation'] in ('Cancel / Do Not Renew', 'Insufficient Data'):
             return 0.0
         elif row['recommendation'] == 'Renegotiate Terms':
-            return round(row['est_retention_value_musd'] - row['renewal_cost_musd'] * 0.7, 2)
+            return round(row['blended_est_retention_value_musd'] - row['renewal_cost_musd'] * 0.7, 2)
         else:
-            return row['net_value_musd']
+            return row['blended_net_value_musd']
     catalog['realized_net_value_musd'] = catalog.apply(realized_net_value, axis=1)
 
     sensitivity_rows = []
     for ltv_mult in [0.8, 1.0, 1.2]:
         for cost_mult in [0.8, 1.0, 1.2]:
-            adj_roi = (catalog['est_retention_value_musd'] * ltv_mult) / (catalog['renewal_cost_musd'] * cost_mult).replace(0, np.nan)
+            adj_roi = (catalog['blended_est_retention_value_musd'] * ltv_mult) / (catalog['renewal_cost_musd'] * cost_mult).replace(0, np.nan)
             sensitivity_rows.append((ltv_mult, cost_mult, round((adj_roi >= 0.8).mean() * 100, 1)))
     sens_df = pd.DataFrame(sensitivity_rows, columns=['ltv_multiplier', 'cost_multiplier', 'pct_titles_recommended_renew'])
 
@@ -401,13 +449,14 @@ def build_executive_memo(catalog, coef_df, sens_df, pulled_metadata=None):
     n_cancel = (catalog['recommendation'] == 'Cancel / Do Not Renew').sum()
     n_renegotiate = (catalog['recommendation'] == 'Renegotiate Terms').sum()
     total_net_value = catalog['realized_net_value_musd'].sum()
-    naive_renew_all_value = catalog['net_value_musd'].sum()
+    naive_renew_all_value = catalog['blended_net_value_musd'].sum()
 
-    memo_cols = ['title_id', 'genre', 'archetype', 'net_value_musd', 'roi_ratio', 'recommendation']
-    top_titles = catalog.sort_values('net_value_musd', ascending=False).head(5)[memo_cols].rename(
-        columns={'net_value_musd': 'net_value_if_renewed_musd'})
-    bottom_titles = catalog.sort_values('net_value_musd', ascending=True).head(5)[memo_cols].rename(
-        columns={'net_value_musd': 'net_value_if_renewed_musd'})
+    memo_cols = ['title_id', 'genre', 'archetype', 'blended_net_value_musd', 'blended_roi_ratio',
+                 'real_box_office_multiple', 'recommendation']
+    top_titles = catalog.sort_values('blended_net_value_musd', ascending=False).head(5)[memo_cols].rename(
+        columns={'blended_net_value_musd': 'net_value_if_renewed_musd', 'blended_roi_ratio': 'roi_ratio'})
+    bottom_titles = catalog.sort_values('blended_net_value_musd', ascending=True).head(5)[memo_cols].rename(
+        columns={'blended_net_value_musd': 'net_value_if_renewed_musd', 'blended_roi_ratio': 'roi_ratio'})
 
     freshness_line = ""
     if pulled_metadata is not None:

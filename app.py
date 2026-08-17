@@ -233,8 +233,16 @@ else:
     with tabs[3]:
         st.caption(f"Auto-calibrated churn-reduction constant: {result['calibrated_constant']:.6f} "
                    "(anchored so the median title breaks even)")
+        st.info("For titles that have already been released, TMDB's real box office revenue is "
+                 "blended into the recommendation (weighted 70% real evidence / 30% simulated "
+                 "streaming signal) rather than relying on the simulated engagement number alone. "
+                 "This avoids nonsense results like a $2B blockbuster getting flagged 'Cancel' "
+                 "purely because its genre's simulated decay rate is high. Titles with no release "
+                 "revenue yet (upcoming/unreleased) rely on the simulated signal alone, since "
+                 "that's genuinely all that's known about them.")
         rec_counts = result['catalog']['recommendation'].value_counts().reindex(
-            ['Renew / Invest More', 'Renew (Monitor)', 'Renegotiate Terms', 'Cancel / Do Not Renew'])
+            ['Renew / Invest More', 'Renew (Monitor)', 'Renegotiate Terms', 'Cancel / Do Not Renew', 'Insufficient Data']
+        ).dropna()
         st.bar_chart(rec_counts)
 
         st.markdown("**Sensitivity: % of titles recommended for renewal**")
@@ -248,6 +256,16 @@ else:
         st.dataframe(result['top_titles'], width='stretch')
         st.markdown("**Titles to sunset**")
         st.dataframe(result['bottom_titles'], width='stretch')
+
+        with_real = result['catalog'][result['catalog']['real_box_office_multiple'].notna()]
+        if not with_real.empty:
+            st.markdown("**Titles where real box office overrode the simulated signal**")
+            st.caption("roi_ratio = simulated-only · blended_roi_ratio = what actually drove the recommendation")
+            st.dataframe(
+                with_real[['title_id', 'tmdb_title', 'real_box_office_multiple', 'roi_ratio',
+                           'blended_roi_ratio', 'recommendation']].sort_values('real_box_office_multiple', ascending=False),
+                width='stretch'
+            )
 
     with tabs[4]:
         st.dataframe(result['churn_coef'], width='stretch')

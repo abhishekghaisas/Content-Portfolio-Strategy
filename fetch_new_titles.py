@@ -59,6 +59,7 @@ def fetch_recent_titles(api_key, max_new=60, max_pages=6, sleep_sec=0.05, verbos
                 time.sleep(sleep_sec)
 
                 budget, runtime = detail.get('budget', 0) or 0, detail.get('runtime', 0) or 0
+                revenue = detail.get('revenue', 0) or 0
                 if budget <= 0 or runtime <= 0:
                     continue
 
@@ -84,6 +85,7 @@ def fetch_recent_titles(api_key, max_new=60, max_pages=6, sleep_sec=0.05, verbos
                     'overview': r.get('overview', ''),
                     'poster_path': r.get('poster_path'),
                     'release_date_full': release_date.strftime('%Y-%m-%d'),
+                    'real_revenue_musd': revenue / 1_000_000,  # 0 if unreleased or TMDB has no figure yet
                 })
             page += 1
         if verbose:
