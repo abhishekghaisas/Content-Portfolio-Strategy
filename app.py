@@ -67,21 +67,136 @@ with st.sidebar:
                    "The daily GitHub Actions workflow will populate real titles over time.")
 
     st.divider()
+    st.subheader("TMDB API key")
+    st.caption("Used for the manual pull below and the title search feature. Not stored anywhere "
+               "persistent — only kept for this browser session.")
+    api_key_input = st.text_input("TMDB API key", type="password", value=st.session_state.get('tmdb_key', ''))
+    st.session_state.tmdb_key = api_key_input
+
+    st.divider()
     st.subheader("Manual pull (testing)")
     st.caption("The scheduled daily pull happens via GitHub Actions, not this app. Use this only "
                "to test a pull without waiting for the schedule.")
-    manual_key = st.text_input("TMDB API key", type="password", help="Only used for this manual test pull; not stored.")
     if st.button("Pull latest titles now"):
-        if not manual_key:
-            st.error("Enter a TMDB API key first.")
+        if not st.session_state.tmdb_key:
+            st.error("Enter a TMDB API key above first.")
         else:
             import fetch_new_titles
-            os.environ["TMDB_API_KEY"] = manual_key
+            os.environ["TMDB_API_KEY"] = st.session_state.tmdb_key
             with st.spinner("Pulling from TMDB..."):
                 fetch_new_titles.main()
             st.cache_data.clear()
             st.success("Pull complete — reloading data.")
             st.rerun()
+
+# ---------------- Search a specific title ----------------
+st.subheader("🔍 Look up a specific title")
+st.caption("Search any movie on TMDB and see what this framework recommends for it — evaluated "
+           "in the context of your current catalog, so the same calibration and archetypes apply.")
+
+if 'search_results' not in st.session_state:
+    st.session_state.search_results = None
+if 'spotlight_result' not in st.session_state:
+    st.session_state.spotlight_result = None
+if 'spotlight_title_id' not in st.session_state:
+    st.session_state.spotlight_title_id = None
+
+sq_col1, sq_col2 = st.columns([4, 1])
+with sq_col1:
+    search_query = st.text_input("Search", placeholder="e.g. Spider-Man: Brand New Day",
+                                  label_visibility="collapsed", key="movie_search_box")
+with sq_col2:
+    do_search = st.button("Search", key="search_btn", width='stretch')
+
+if do_search:
+    if not st.session_state.tmdb_key:
+        st.error("Enter your TMDB API key in the sidebar first.")
+    elif not search_query.strip():
+        st.error("Type a movie title to search.")
+    else:
+        import tmdb_client
+        with st.spinner(f"Searching TMDB for '{search_query}'..."):
+            try:
+                st.session_state.search_results = tmdb_client.search_movies(st.session_state.tmdb_key, search_query)
+                st.session_state.spotlight_result = None  # clear any previous spotlight
+            except Exception as e:
+                st.error(f"Search failed: {e}")
+                st.session_state.search_results = None
+
+if st.session_state.search_results:
+    if len(st.session_state.search_results) == 0:
+        st.info("No matches found on TMDB for that title.")
+    else:
+        options = [f"{r['title']} ({r['year']})" if r['year'] else r['title']
+                   for r in st.session_state.search_results]
+        chosen_idx = st.radio("Select the correct title:", options=list(range(len(options))),
+                               format_func=lambda i: options[i], key="search_choice_radio")
+        chosen = st.session_state.search_results[chosen_idx]
+
+        pcol, dcol = st.columns([1, 3])
+        with pcol:
+            if chosen.get('poster_path'):
+                st.image(f"https://image.tmdb.org/t/p/w200{chosen['poster_path']}", width='stretch')
+        with dcol:
+            st.write(chosen.get('overview', '')[:300])
+            if st.button("Analyze this title", type="primary"):
+                import tmdb_client
+                with st.spinner("Fetching details and running the analysis..."):
+                    try:
+                        row = tmdb_client.fetch_movie_row(st.session_state.tmdb_key, chosen['id'])
+                    except Exception as e:
+                        row = None
+                        st.error(f"Couldn't fetch details: {e}")
+                if row is None:
+                    st.warning("This title is missing budget or runtime data on TMDB, so the "
+                               "economics layer can't evaluate it.")
+                else:
+                    # Always use freshly-fetched data for the searched title, even if an older
+                    # (possibly stale) copy already exists in the tracked catalog.
+                    merged = catalog_meta[catalog_meta['title_id'] != row['title_id']].copy()
+                    merged = pd.concat([merged, pd.DataFrame([row])], ignore_index=True)
+                    with st.spinner("Running hypothesis tests, modeling, clustering, and economics..."):
+                        st.session_state.spotlight_result = run_full_pipeline(merged, pulled_metadata=pull_meta)
+                    st.session_state.spotlight_title_id = row['title_id']
+
+if st.session_state.spotlight_result is not None:
+    sres = st.session_state.spotlight_result
+    srow_df = sres['catalog'][sres['catalog']['title_id'] == st.session_state.spotlight_title_id]
+    if not srow_df.empty:
+        srow = srow_df.iloc[0]
+        st.markdown("### Result")
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            if isinstance(srow.get('poster_path'), str) and srow['poster_path']:
+                st.image(f"https://image.tmdb.org/t/p/w300{srow['poster_path']}", width='stretch')
+        with c2:
+            st.markdown(f"## {srow['tmdb_title']}")
+            st.write(srow.get('overview', ''))
+            badge_color = {'Renew / Invest More': '🟢', 'Renew (Monitor)': '🟡',
+                           'Renegotiate Terms': '🟠', 'Cancel / Do Not Renew': '🔴',
+                           'Insufficient Data': '⚪'}
+            st.markdown(f"#### {badge_color.get(srow['recommendation'], '⚪')} {srow['recommendation']}")
+
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Budget", f"${srow['production_budget_musd']:.0f}M")
+            m2.metric("Real box office", f"${srow['real_revenue_musd']:.0f}M" if srow['real_revenue_musd'] > 0
+                      else "Not yet known")
+            m3.metric("Box office multiple", f"{srow['real_box_office_multiple']:.2f}x"
+                      if pd.notna(srow['real_box_office_multiple']) else "N/A")
+
+            m4, m5, m6 = st.columns(3)
+            m4.metric("Simulated-only ROI", srow['roi_ratio'])
+            m5.metric("Blended ROI (drives verdict)", srow['blended_roi_ratio'])
+            m6.metric("Archetype", srow['archetype'])
+
+        st.caption("Simulated engagement, subscriber, and churn figures are illustrative (no "
+                   "public API has real streaming data); budget and box office revenue above are "
+                   "real TMDB figures. This verdict reflects the current catalog's calibration, "
+                   "so it may shift slightly as the catalog above grows.")
+    else:
+        st.warning("Couldn't find the analyzed title in the pipeline output — try re-running the analysis.")
+
+st.divider()
 
 # ---------------- Lightweight overview (always shown, no heavy compute) ----------------
 st.subheader("Catalog overview")
